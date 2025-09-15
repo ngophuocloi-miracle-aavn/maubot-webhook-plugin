@@ -1,0 +1,35 @@
+# Webhook Plugin Base Configuration
+
+# Webhook request timeout in seconds
+webhook_timeout: 30
+
+# Maximum number of retries for failed webhook requests
+max_webhook_retries: 3
+
+# User agent string for webhook requests
+webhook_user_agent: "Maubot-Webhook-Plugin/1.0"
+
+# Message data structure sent to webhooks
+# Available variables: event_id, room_id, sender, timestamp, message_type, body, formatted_body, format
+message_data_template:
+  event_id: "{event_id}"
+  room_id: "{room_id}"
+  sender: "{sender}"
+  timestamp: "{timestamp}"
+  message_type: "{message_type}"
+  body: "{body}"
+  formatted_body: "{formatted_body}"
+  format: "{format}"
+
+# Additional custom fields to include in webhook payload
+# You can add any custom fields here
+custom_fields:
+  source: "maubot-webhook"
+  version: "1.0"
+
+# Response template for webhook responses
+# Available variables: response (the webhook response content)
+response_template: "🤖 **Webhook Response:** {response}"
+
+# Whether to include null/empty fields in the webhook payload
+include_empty_fields: false

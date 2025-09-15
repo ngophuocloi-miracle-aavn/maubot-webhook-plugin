@@ -1,0 +1,13 @@
+maubot: 0.3.0
+id: xyz.maubot.webhook
+version: 1.0.0
+license: AGPL-3.0-or-later
+modules:
+- webhook
+main_class: WebhookBot
+extra_files:
+- base-config.yaml
+dependencies:
+- aiohttp>=3.8.0
+database: true
+database_type: asyncpg
