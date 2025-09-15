@@ -29,15 +29,30 @@ from maubot.handlers import command, event
 from mautrix.types import (
     EventID,
     EventType,
+    Format,
     MessageType,
     RoomID,
     StateEvent,
+    TextMessageEventContent,
 )
 from mautrix.util.async_db import UpgradeTable
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
+from mautrix.util.formatter import EntityType, MarkdownString, MatrixParser
+from mautrix.util import markdown
 
 from .db import WebhookDBManager, WebhookRegistration
 from .migrations import upgrade_table
+
+
+class HumanReadableString(MarkdownString):
+    def format(self, entity_type: EntityType, **kwargs) -> MarkdownString:
+        if entity_type == EntityType.URL and kwargs["url"] != self.text:
+            self.text = f"{self.text} ({kwargs['url']})"
+            return self
+        return super(HumanReadableString, self).format(entity_type, **kwargs)
+
+class MaubotHTMLParser(MatrixParser[HumanReadableString]):
+    fs = HumanReadableString
 
 
 class Config(BaseProxyConfig):
@@ -107,6 +122,31 @@ class WebhookBot(Plugin):
 
     async def stop(self) -> None:
         await super().stop()
+    
+    async def _parse_formatted(
+        self, message: str, allow_html: bool = True, render_markdown: bool = True
+    ) -> tuple[str, str]:
+        if render_markdown:
+            html_content = markdown.render(message, allow_html=allow_html)
+        elif allow_html:
+            html_content = message
+        else:
+            return message, html.escape(message)
+        text = (await MaubotHTMLParser().parse(html_content)).text
+        if len(text) > 100 and len(text) + len(html_content) > 40000:
+            text = text[:100] + "[long message cut off]"
+        return text, html_content
+
+    async def _send_text_reply(self, reply_to: MessageEvent, message: str, allow_html: bool = True, render_markdown: bool = True) -> EventID:
+        content = TextMessageEventContent(msgtype=MessageType.TEXT, body=message)
+        content.set_reply(reply_to)
+        if render_markdown or allow_html:
+            content.format = Format.HTML
+            content.body, content.formatted_body = await self._parse_formatted(message, allow_html=allow_html, render_markdown=render_markdown)
+        try:
+            return await self.client.send_message_event(reply_to.room_id, EventType.ROOM_MESSAGE, content)
+        except Exception as e:
+            self.log.warning(f"Failed to send reply to {reply_to.event_id} in {reply_to.room_id}: {e}")
 
     def is_valid_url(self, url: str) -> bool:
         """Validate if the provided URL is a valid HTTP/HTTPS URL."""
@@ -118,7 +158,7 @@ class WebhookBot(Plugin):
 
     @command.new("webhook", help="Webhook management commands")
     async def webhook_command(self, evt: MessageEvent) -> None:
-        await evt.respond("Available webhook commands:\n"
+        await self._send_text_reply(evt, "Available webhook commands:\n"
                          "• `!webhook register <url>` - Register a webhook URL\n"
                          "• `!webhook unregister` - Unregister your webhook\n"
                          "• `!webhook list` - List all webhooks in this room\n"
@@ -131,12 +171,12 @@ class WebhookBot(Plugin):
         url = url.strip()
         
         if not url:
-            await evt.respond("❌ Please provide a webhook URL.\n"
+            await self._send_text_reply(evt, "❌ Please provide a webhook URL.\n"
                             "Usage: `!webhook register <url>`")
             return
 
         if not self.is_valid_url(url):
-            await evt.respond("❌ Invalid URL. Please provide a valid HTTP or HTTPS URL.")
+            await self._send_text_reply(evt, "❌ Invalid URL. Please provide a valid HTTP or HTTPS URL.")
             return
 
         try:
@@ -146,11 +186,11 @@ class WebhookBot(Plugin):
                 webhook_url=url,
             )
             
-            await evt.respond(
+            await self._send_text_reply(evt,
                 f"✅ Webhook registered successfully!\n"
-                f"**URL:** `{url}`\n"
-                f"**Room:** {evt.room_id}\n"
-                f"**User:** {evt.sender}\n\n"
+                f"* **URL:** `{url}`\n"
+                f"* **Room:** {evt.room_id}\n"
+                f"* **User:** {evt.sender}\n\n"
                 f"All messages in this room will now be forwarded to your webhook."
             )
             
@@ -158,7 +198,7 @@ class WebhookBot(Plugin):
             
         except Exception as e:
             self.log.error(f"Failed to register webhook: {e}")
-            await evt.respond(f"❌ Failed to register webhook: {str(e)}")
+            await self._send_text_reply(evt, f"❌ Failed to register webhook: {str(e)}")
 
     @webhook_command.subcommand("unregister", help="Unregister your webhook")
     async def unregister_webhook(self, evt: MessageEvent) -> None:
@@ -170,14 +210,14 @@ class WebhookBot(Plugin):
             )
             
             if success:
-                await evt.respond("✅ Webhook unregistered successfully.")
+                await self._send_text_reply(evt, "✅ Webhook unregistered successfully.")
                 self.log.info(f"Webhook unregistered for user {evt.sender} in room {evt.room_id}")
             else:
-                await evt.respond("❌ No webhook found to unregister.")
+                await self._send_text_reply(evt, "❌ No webhook found to unregister.")
                 
         except Exception as e:
             self.log.error(f"Failed to unregister webhook: {e}")
-            await evt.respond(f"❌ Failed to unregister webhook: {str(e)}")
+            await self._send_text_reply(evt, f"❌ Failed to unregister webhook: {str(e)}")
 
     @webhook_command.subcommand("list", help="List all webhooks in this room")
     async def list_webhooks(self, evt: MessageEvent) -> None:
@@ -186,24 +226,24 @@ class WebhookBot(Plugin):
             webhooks = await self.db.list_webhooks_for_room(evt.room_id)
             
             if not webhooks:
-                await evt.respond("No webhooks registered in this room.")
+                await self._send_text_reply(evt, "No webhooks registered in this room.")
                 return
 
             response = "**Webhooks in this room:**\n\n"
             for webhook in webhooks:
                 status = "🟢 Active" if webhook.enabled else "🔴 Disabled"
                 response += (
-                    f"• **User:** {webhook.user_id}\n"
-                    f"  **URL:** `{webhook.webhook_url}`\n"
-                    f"  **Status:** {status}\n"
-                    f"  **Created:** {webhook.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                    f"* **User:** {webhook.user_id}\n"
+                    f"*  **URL:** `{webhook.webhook_url}`\n"
+                    f"*  **Status:** {status}\n"
+                    f"*  **Created:** {webhook.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 )
             
-            await evt.respond(response)
+            await self._send_text_reply(evt, response)
             
         except Exception as e:
             self.log.error(f"Failed to list webhooks: {e}")
-            await evt.respond(f"❌ Failed to list webhooks: {str(e)}")
+            await self._send_text_reply(evt, f"❌ Failed to list webhooks: {str(e)}")
 
     @webhook_command.subcommand("status", help="Check your webhook status")
     async def webhook_status(self, evt: MessageEvent) -> None:
@@ -215,20 +255,20 @@ class WebhookBot(Plugin):
             )
             
             if not webhook:
-                await evt.respond("❌ No webhook registered for you in this room.")
+                await self._send_text_reply(evt, "❌ No webhook registered for you in this room.")
                 return
 
             status = "🟢 Active" if webhook.enabled else "🔴 Disabled"
-            await evt.respond(
+            await self._send_text_reply(evt,
                 f"**Your webhook status:**\n"
-                f"**URL:** `{webhook.webhook_url}`\n"
-                f"**Status:** {status}\n"
-                f"**Created:** {webhook.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+                f"* **URL:** `{webhook.webhook_url}`\n"
+                f"* **Status:** {status}\n"
+                f"* **Created:** {webhook.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
             )
             
         except Exception as e:
             self.log.error(f"Failed to get webhook status: {e}")
-            await evt.respond(f"❌ Failed to get webhook status: {str(e)}")
+            await self._send_text_reply(evt, f"❌ Failed to get webhook status: {str(e)}")
 
     @event.on(EventType.ROOM_MESSAGE)
     async def on_message(self, evt: MessageEvent) -> None:
@@ -320,7 +360,7 @@ class WebhookBot(Plugin):
                                     if response_text and isinstance(response_text, str):
                                         # Send the webhook response back to the chat using template
                                         formatted_response = self.config.response_template.format(response=response_text.strip())
-                                        await original_evt.respond(formatted_response)
+                                        await self._send_text_reply(original_evt, formatted_response)
                                             
                                 except (json.JSONDecodeError, KeyError):
                                     # Webhook didn't return JSON or doesn't have a response field
