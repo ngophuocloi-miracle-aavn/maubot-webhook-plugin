@@ -90,16 +90,6 @@ message_data_template:
   message: "{body}"
 ```
 
-### Per-Webhook Configuration (Key=Value Format)  
-During registration, use simple key=value pairs:
-```bash
-# Register with template
-!webhook register https://example.com/hook event_id={event_id} room_id={room_id} sender={sender} message={body}
-
-# Register with minimal template
-!webhook register https://simple.example.com/hook message={body}
-```
-
 ### Template Inheritance
 1. **Default**: Webhooks use global template from config
 2. **Override**: Use key=value format during registration to customize individual webhooks  
@@ -209,9 +199,6 @@ The database automatically migrates to support multiple webhooks per user and pe
 # Register a simple webhook
 !webhook register https://example.com/hook
 
-# Register with custom template  
-!webhook register https://api.example.com/webhook room={room_id} user={sender} message={body}
-
 # List all webhooks (shows IDs and status)
 !webhook list
 
@@ -223,18 +210,6 @@ The database automatically migrates to support multiple webhooks per user and pe
 
 # Permanently delete a webhook
 !webhook unregister 123
-```
-
-### Advanced Template Configuration
-```bash
-# Register webhook with minimal data
-!webhook register https://simple.example.com/hook message={body}
-
-# Register webhook with rich metadata
-!webhook register https://rich.example.com/hook id={event_id} room={room_id} user={sender} time={timestamp} msg={body} html={formatted_body} fmt={format}
-
-# Register webhook with complex template
-!webhook register https://api.example.com/webhook event_id={event_id} room={room_id} sender={sender} timestamp={timestamp} content={body} type={message_type}
 ```
 
 ## Security Considerations
