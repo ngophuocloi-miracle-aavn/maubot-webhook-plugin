@@ -117,8 +117,23 @@ class WebhookDBManager:
         user_id: UserID,
         webhook_url: str,
         message_data_template: Optional[Dict[str, str]] = None,
+        webhook_id: Optional[int] = None,
     ) -> WebhookRegistration:
-        """Register a new webhook. If the URL already exists for this user in this room, update it."""
+        """Register a new webhook or enable an existing one by ID."""
+        # Convert template to JSON string for storage
+        template_json = json.dumps(message_data_template) if message_data_template else None
+        
+        if webhook_id:
+            # Enable existing webhook by ID
+            update_q = """
+            UPDATE webhook_registration 
+            SET enabled = true, message_data_template = $3
+            WHERE id = $1 AND user_id = $2
+            RETURNING id, room_id, user_id, webhook_url, enabled, created_at, message_data_template
+            """
+            row = await self.db.fetchrow(update_q, webhook_id, user_id, template_json)
+            return WebhookRegistration.from_row(row)
+        
         # Check if this exact URL already exists for this user in this room
         existing_q = """
         SELECT id, room_id, user_id, webhook_url, enabled, created_at, message_data_template
@@ -126,9 +141,6 @@ class WebhookDBManager:
         WHERE room_id = $1 AND user_id = $2 AND webhook_url = $3
         """
         existing_row = await self.db.fetchrow(existing_q, room_id, user_id, webhook_url)
-        
-        # Convert template to JSON string for storage
-        template_json = json.dumps(message_data_template) if message_data_template else None
         
         if existing_row:
             # Update existing webhook (enable it and update template)
@@ -209,7 +221,7 @@ class WebhookDBManager:
         SELECT id, room_id, user_id, webhook_url, enabled, created_at, message_data_template
         FROM webhook_registration 
         WHERE room_id = $1
-        ORDER BY created_at DESC
+        ORDER BY id ASC
         """
         rows = await self.db.fetch(q, room_id)
         return [WebhookRegistration.from_row(row) for row in rows if row]
@@ -237,3 +249,40 @@ class WebhookDBManager:
         """
         result = await self.db.execute(q, webhook_id, user_id, template_json)
         return result != "UPDATE 0"
+
+    async def delete_webhook(
+        self,
+        room_id: RoomID,
+        user_id: UserID,
+        webhook_url: Optional[str] = None,
+    ) -> bool:
+        """Delete webhook(s) from the database."""
+        if webhook_url:
+            # Delete specific webhook by URL
+            q = """
+            DELETE FROM webhook_registration 
+            WHERE room_id = $1 AND user_id = $2 AND webhook_url = $3
+            """
+            result = await self.db.execute(q, room_id, user_id, webhook_url)
+        else:
+            # Delete all webhooks for user in room
+            q = """
+            DELETE FROM webhook_registration 
+            WHERE room_id = $1 AND user_id = $2
+            """
+            result = await self.db.execute(q, room_id, user_id)
+        
+        return result != "DELETE 0"
+
+    async def delete_webhook_by_id(
+        self,
+        webhook_id: int,
+        user_id: UserID,
+    ) -> bool:
+        """Delete a specific webhook by ID (with user verification)."""
+        q = """
+        DELETE FROM webhook_registration 
+        WHERE id = $1 AND user_id = $2
+        """
+        result = await self.db.execute(q, webhook_id, user_id)
+        return result != "DELETE 0"

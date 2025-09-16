@@ -3,16 +3,8 @@
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
-# the Free Software Foundat            response = "**Webhooks in this room:**\n\n"
-            for webhook in webhooks:
-                status = "🟢 Active" if webhook.enabled else "🔴 Disabled"
-                template_status = "📝 Custom" if webhook.message_data_template else "🔧 Default"
-                response += (
-                    f"• **ID:** {webhook.id} | **User:** {webhook.user_id}\n"
-                    f"  **URL:** `{webhook.webhook_url}`\n"
-                    f"  **Status:** {status} | **Template:** {template_status}\n"
-                    f"  **Created:** {webhook.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                )er version 3 of the License, or
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
 # (at your option) any later version.
 #
 # This program is distributed in the hope that it will be useful,
@@ -169,9 +161,10 @@ class WebhookBot(Plugin):
     async def webhook_command(self, evt: MessageEvent) -> None:
         await self._send_text_reply(evt, "Available webhook commands:\n"
                          "• `!webhook register <url>` - Register a new webhook URL\n"
-                         "• `!webhook unregister [url|id]` - Unregister webhook(s)\n"
+                         "• `!webhook unregister [url|id]` - Delete webhook(s)\n"
+                         "• `!webhook disable <id>` - Disable a webhook\n"
+                         "• `!webhook enable <id>` - Enable a webhook\n"
                          "• `!webhook list` - List all webhooks in this room\n"
-                         "• `!webhook status` - Check your webhooks status\n"
                          "• `!webhook configure <id> <template>` - Configure message template for a webhook\n"
                          "• `!webhook template <id>` - Show webhook template\n"
                          "• `!webhook reset-template <id>` - Reset webhook template")
@@ -212,10 +205,79 @@ class WebhookBot(Plugin):
             self.log.error(f"Failed to register webhook: {e}")
             await self._send_text_reply(evt, f"❌ Failed to register webhook: {str(e)}")
 
-    @webhook_command.subcommand("unregister", help="Unregister your webhooks")
+    @webhook_command.subcommand("unregister", help="Delete your webhooks")
     @command.argument("target", pass_raw=True, required=False)
     async def unregister_webhook(self, evt: MessageEvent, target: str = "") -> None:
-        """Unregister webhook(s) for the current room and user."""
+        """Delete webhook(s) for the current room and user."""
+        target = target.strip()
+        
+        try:
+            # Get user's webhooks first
+            user_webhooks = await self.db.get_webhook_by_room_and_user(evt.room_id, evt.sender)
+            
+            if not user_webhooks:
+                await self._send_text_reply(evt, "❌ No webhooks found to delete.")
+                return
+            
+            if not target:
+                # Delete all webhooks for this user
+                success = await self.db.delete_webhook(
+                    room_id=evt.room_id,
+                    user_id=evt.sender,
+                )
+                
+                if success:
+                    count = len(user_webhooks)
+                    await self._send_text_reply(evt, f"✅ {count} webhook{'s' if count != 1 else ''} deleted successfully.")
+                    self.log.info(f"All webhooks deleted for user {evt.sender} in room {evt.room_id}")
+                else:
+                    await self._send_text_reply(evt, "❌ Failed to delete webhooks.")
+            
+            elif target.isdigit():
+                # Delete by webhook ID
+                webhook_id = int(target)
+                webhook = next((w for w in user_webhooks if w.id == webhook_id), None)
+                
+                if not webhook:
+                    await self._send_text_reply(evt, f"❌ No webhook found with ID {webhook_id}.")
+                    return
+                
+                success = await self.db.delete_webhook_by_id(webhook_id, evt.sender)
+                
+                if success:
+                    await self._send_text_reply(evt, f"✅ Webhook ID {webhook_id} deleted successfully.")
+                    self.log.info(f"Webhook ID {webhook_id} deleted for user {evt.sender}")
+                else:
+                    await self._send_text_reply(evt, f"❌ Failed to delete webhook ID {webhook_id}.")
+            
+            else:
+                # Delete by URL
+                webhook = next((w for w in user_webhooks if w.webhook_url == target), None)
+                
+                if not webhook:
+                    await self._send_text_reply(evt, f"❌ No webhook found with URL: {target}")
+                    return
+                
+                success = await self.db.delete_webhook(
+                    room_id=evt.room_id,
+                    user_id=evt.sender,
+                    webhook_url=target,
+                )
+                
+                if success:
+                    await self._send_text_reply(evt, f"✅ Webhook deleted successfully: {target}")
+                    self.log.info(f"Webhook URL {target} deleted for user {evt.sender}")
+                else:
+                    await self._send_text_reply(evt, f"❌ Failed to delete webhook: {target}")
+                
+        except Exception as e:
+            self.log.error(f"Failed to delete webhook: {e}")
+            await self._send_text_reply(evt, f"❌ Failed to delete webhook: {str(e)}")
+
+    @webhook_command.subcommand("disable", help="Disable your webhooks")
+    @command.argument("target", pass_raw=True, required=False)
+    async def disable_webhook(self, evt: MessageEvent, target: str = "") -> None:
+        """Disable webhook(s) for the current room and user."""
         target = target.strip()
         
         try:
@@ -224,11 +286,11 @@ class WebhookBot(Plugin):
             active_webhooks = [w for w in user_webhooks if w.enabled]
             
             if not active_webhooks:
-                await self._send_text_reply(evt, "❌ No active webhooks found to unregister.")
+                await self._send_text_reply(evt, "❌ No active webhooks found to disable.")
                 return
             
             if not target:
-                # Unregister all webhooks for this user
+                # Disable all webhooks for this user
                 success = await self.db.unregister_webhook(
                     room_id=evt.room_id,
                     user_id=evt.sender,
@@ -236,13 +298,13 @@ class WebhookBot(Plugin):
                 
                 if success:
                     count = len(active_webhooks)
-                    await self._send_text_reply(evt, f"✅ {count} webhook{'s' if count != 1 else ''} unregistered successfully.")
-                    self.log.info(f"All webhooks unregistered for user {evt.sender} in room {evt.room_id}")
+                    await self._send_text_reply(evt, f"✅ {count} webhook{'s' if count != 1 else ''} disabled successfully.")
+                    self.log.info(f"All webhooks disabled for user {evt.sender} in room {evt.room_id}")
                 else:
-                    await self._send_text_reply(evt, "❌ Failed to unregister webhooks.")
+                    await self._send_text_reply(evt, "❌ Failed to disable webhooks.")
             
             elif target.isdigit():
-                # Unregister by webhook ID
+                # Disable by webhook ID
                 webhook_id = int(target)
                 webhook = next((w for w in active_webhooks if w.id == webhook_id), None)
                 
@@ -253,13 +315,13 @@ class WebhookBot(Plugin):
                 success = await self.db.unregister_webhook_by_id(webhook_id, evt.sender)
                 
                 if success:
-                    await self._send_text_reply(evt, f"✅ Webhook ID {webhook_id} unregistered successfully.")
-                    self.log.info(f"Webhook ID {webhook_id} unregistered for user {evt.sender}")
+                    await self._send_text_reply(evt, f"✅ Webhook ID {webhook_id} disabled successfully.")
+                    self.log.info(f"Webhook ID {webhook_id} disabled for user {evt.sender}")
                 else:
-                    await self._send_text_reply(evt, f"❌ Failed to unregister webhook ID {webhook_id}.")
+                    await self._send_text_reply(evt, f"❌ Failed to disable webhook ID {webhook_id}.")
             
             else:
-                # Unregister by URL
+                # Disable by URL
                 webhook = next((w for w in active_webhooks if w.webhook_url == target), None)
                 
                 if not webhook:
@@ -273,14 +335,98 @@ class WebhookBot(Plugin):
                 )
                 
                 if success:
-                    await self._send_text_reply(evt, f"✅ Webhook unregistered successfully: {target}")
-                    self.log.info(f"Webhook URL {target} unregistered for user {evt.sender}")
+                    await self._send_text_reply(evt, f"✅ Webhook disabled successfully: {target}")
+                    self.log.info(f"Webhook URL {target} disabled for user {evt.sender}")
                 else:
-                    await self._send_text_reply(evt, f"❌ Failed to unregister webhook: {target}")
+                    await self._send_text_reply(evt, f"❌ Failed to disable webhook: {target}")
                 
         except Exception as e:
-            self.log.error(f"Failed to unregister webhook: {e}")
-            await self._send_text_reply(evt, f"❌ Failed to unregister webhook: {str(e)}")
+            self.log.error(f"Failed to disable webhook: {e}")
+            await self._send_text_reply(evt, f"❌ Failed to disable webhook: {str(e)}")
+
+    @webhook_command.subcommand("enable", help="Enable your disabled webhooks")
+    @command.argument("target", pass_raw=True, required=False)
+    async def enable_webhook(self, evt: MessageEvent, target: str = "") -> None:
+        """Enable disabled webhook(s) for the current room and user."""
+        target = target.strip()
+        
+        try:
+            # Get user's webhooks first
+            user_webhooks = await self.db.get_webhook_by_room_and_user(evt.room_id, evt.sender)
+            disabled_webhooks = [w for w in user_webhooks if not w.enabled]
+            
+            if not disabled_webhooks:
+                await self._send_text_reply(evt, "❌ No disabled webhooks found to enable.")
+                return
+            
+            if not target:
+                # Enable all disabled webhooks for this user
+                count = 0
+                for webhook in disabled_webhooks:
+                    success = await self.db.register_webhook(
+                        webhook.room_id,
+                        webhook.user_id,
+                        webhook.webhook_url,
+                        webhook.message_data_template,
+                        webhook_id=webhook.id  # Use existing ID to update
+                    )
+                    if success:
+                        count += 1
+                
+                if count > 0:
+                    await self._send_text_reply(evt, f"✅ {count} webhook{'s' if count != 1 else ''} enabled successfully.")
+                    self.log.info(f"{count} webhooks enabled for user {evt.sender} in room {evt.room_id}")
+                else:
+                    await self._send_text_reply(evt, "❌ Failed to enable webhooks.")
+            
+            elif target.isdigit():
+                # Enable by webhook ID
+                webhook_id = int(target)
+                webhook = next((w for w in disabled_webhooks if w.id == webhook_id), None)
+                
+                if not webhook:
+                    await self._send_text_reply(evt, f"❌ No disabled webhook found with ID {webhook_id}.")
+                    return
+                
+                success = await self.db.register_webhook(
+                    webhook.room_id,
+                    webhook.user_id,
+                    webhook.webhook_url,
+                    webhook.message_data_template,
+                    webhook_id=webhook.id
+                )
+                
+                if success:
+                    await self._send_text_reply(evt, f"✅ Webhook ID {webhook_id} enabled successfully.")
+                    self.log.info(f"Webhook ID {webhook_id} enabled for user {evt.sender}")
+                else:
+                    await self._send_text_reply(evt, f"❌ Failed to enable webhook ID {webhook_id}.")
+            
+            else:
+                # Enable by URL
+                webhook = next((w for w in disabled_webhooks if w.webhook_url == target), None)
+                
+                if not webhook:
+                    await self._send_text_reply(evt, f"❌ No disabled webhook found with URL: {target}")
+                    return
+                
+                success = await self.db.register_webhook(
+                    webhook.room_id,
+                    webhook.user_id,
+                    webhook.webhook_url,
+                    webhook.message_data_template,
+                    webhook_id=webhook.id
+                )
+                
+                if success:
+                    await self._send_text_reply(evt, f"✅ Webhook enabled successfully: {target}")
+                    self.log.info(f"Webhook URL {target} enabled for user {evt.sender}")
+                else:
+                    await self._send_text_reply(evt, f"❌ Failed to enable webhook: {target}")
+                
+        except Exception as e:
+            self.log.error(f"Failed to enable webhook: {e}")
+            await self._send_text_reply(evt, f"❌ Failed to enable webhook: {str(e)}")
 
     @webhook_command.subcommand("list", help="List all webhooks in this room")
     async def list_webhooks(self, evt: MessageEvent) -> None:
@@ -296,10 +442,7 @@ class WebhookBot(Plugin):
             for webhook in webhooks:
                 status = "🟢 Active" if webhook.enabled else "🔴 Disabled"
                 response += (
-                    f"* **User:** {webhook.user_id}\n"
-                    f"*  **URL:** `{webhook.webhook_url}`\n"
-                    f"*  **Status:** {status}\n"
-                    f"*  **Created:** {webhook.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                    f"* **ID {webhook.id}:** `{webhook.webhook_url} ({status})`\n\n"
                 )
             
             await self._send_text_reply(evt, response)
@@ -308,187 +451,153 @@ class WebhookBot(Plugin):
             self.log.error(f"Failed to list webhooks: {e}")
             await self._send_text_reply(evt, f"❌ Failed to list webhooks: {str(e)}")
 
-    @webhook_command.subcommand("status", help="Check your webhooks status")
-    async def webhook_status(self, evt: MessageEvent) -> None:
-        """Check the webhook status for the current user in this room."""
-        try:
-            webhooks = await self.db.get_webhook_by_room_and_user(
-                room_id=evt.room_id,
-                user_id=evt.sender,
-            )
+    # @webhook_command.subcommand("configure", help="Configure message data template for a webhook")
+    # @command.argument("webhook_id", pass_raw=False, required=True)
+    # @command.argument("template", pass_raw=True, required=False)
+    # async def configure_webhook(self, evt: MessageEvent, webhook_id: str, template: str = "") -> None:
+    #     """Configure the message data template for a specific webhook."""
+    #     if not webhook_id.isdigit():
+    #         await self._send_text_reply(evt, "❌ Webhook ID must be a number. Use `!webhook status` to see your webhook IDs.")
+    #         return
             
-            if not webhooks:
-                await self._send_text_reply(evt, "❌ No webhooks registered for you in this room.")
-                return
-
-            active_count = len([w for w in webhooks if w.enabled])
-            total_count = len(webhooks)
-            
-            response = f"**Your webhooks status:** {active_count}/{total_count} active\n\n"
-            
-            for webhook in webhooks:
-                status = "🟢 Active" if webhook.enabled else "🔴 Disabled"
-                template_status = "📝 Custom" if webhook.message_data_template else "🔧 Default"
-                response += (
-                    f"• **ID:** {webhook.id}\n"
-                    f"  **URL:** `{webhook.webhook_url}`\n"
-                    f"  **Status:** {status} | **Template:** {template_status}\n"
-                    f"  **Created:** {webhook.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                )
-            
-            await self._send_text_reply(evt, response)
-            
-        except Exception as e:
-            self.log.error(f"Failed to get webhook status: {e}")
-            await self._send_text_reply(evt, f"❌ Failed to get webhook status: {str(e)}")
-
-    @webhook_command.subcommand("configure", help="Configure message data template for a webhook")
-    @command.argument("webhook_id", pass_raw=False, required=True)
-    @command.argument("template", pass_raw=True, required=False)
-    async def configure_webhook(self, evt: MessageEvent, webhook_id: str, template: str = "") -> None:
-        """Configure the message data template for a specific webhook."""
-        if not webhook_id.isdigit():
-            await self._send_text_reply(evt, "❌ Webhook ID must be a number. Use `!webhook status` to see your webhook IDs.")
-            return
-            
-        webhook_id_int = int(webhook_id)
-        template = template.strip()
+    #     webhook_id_int = int(webhook_id)
+    #     template = template.strip()
         
-        try:
-            # Verify webhook belongs to user
-            webhook = await self.db.get_webhook_by_id(webhook_id_int)
-            if not webhook or webhook.user_id != evt.sender:
-                await self._send_text_reply(evt, f"❌ No webhook found with ID {webhook_id_int} or you don't own it.")
-                return
+    #     try:
+    #         # Verify webhook belongs to user
+    #         webhook = await self.db.get_webhook_by_id(webhook_id_int)
+    #         if not webhook or webhook.user_id != evt.sender:
+    #             await self._send_text_reply(evt, f"❌ No webhook found with ID {webhook_id_int} or you don't own it.")
+    #             return
             
-            if not template:
-                # Show help and current template
-                default_template = self.config.message_data_template
-                current_template = webhook.message_data_template or default_template
+    #         if not template:
+    #             # Show help and current template
+    #             default_template = self.config.message_data_template
+    #             current_template = webhook.message_data_template or default_template
                 
-                available_vars = "event_id, room_id, sender, timestamp, message_type, body, formatted_body, format"
-                template_str = json.dumps(current_template, indent=2)
+    #             available_vars = "event_id, room_id, sender, timestamp, message_type, body, formatted_body, format"
+    #             template_str = json.dumps(current_template, indent=2)
                 
-                await self._send_text_reply(evt,
-                    f"**Configure Message Template for Webhook ID {webhook_id_int}**\n\n"
-                    f"**Current template:**\n```json\n{template_str}\n```\n\n"
-                    f"**Available variables:** {available_vars}\n\n"
-                    f"**Usage:**\n"
-                    f"`!webhook configure {webhook_id_int} {{\"body\": \"{{body}}\", \"sender\": \"{{sender}}\"}}`\n\n"
-                    f"**Example templates:**\n"
-                    f"• Simple: `{{\"message\": \"{{body}}\", \"from\": \"{{sender}}\"}}`\n"
-                    f"• Discord: `{{\"content\": \"{{body}}\", \"username\": \"{{sender}}\"}}`\n"
-                    f"• Slack: `{{\"text\": \"{{body}}\", \"channel\": \"{{room_id}}\"}}`"
-                )
-                return
+    #             await self._send_text_reply(evt,
+    #                 f"**Configure Message Template for Webhook ID {webhook_id_int}**\n\n"
+    #                 f"**Current template:**\n```json\n{template_str}\n```\n\n"
+    #                 f"**Available variables:** {available_vars}\n\n"
+    #                 f"**Usage:**\n"
+    #                 f"`!webhook configure {webhook_id_int} {{\"body\": \"{{body}}\", \"sender\": \"{{sender}}\"}}`\n\n"
+    #                 f"**Example templates:**\n"
+    #                 f"• Simple: `{{\"message\": \"{{body}}\", \"from\": \"{{sender}}\"}}`\n"
+    #                 f"• Discord: `{{\"content\": \"{{body}}\", \"username\": \"{{sender}}\"}}`\n"
+    #                 f"• Slack: `{{\"text\": \"{{body}}\", \"channel\": \"{{room_id}}\"}}`"
+    #             )
+    #             return
 
-            # Parse and validate JSON template
-            try:
-                new_template = json.loads(template)
+    #         # Parse and validate JSON template
+    #         try:
+    #             new_template = json.loads(template)
                 
-                if not isinstance(new_template, dict):
-                    await self._send_text_reply(evt, "❌ Template must be a JSON object (dictionary).")
-                    return
+    #             if not isinstance(new_template, dict):
+    #                 await self._send_text_reply(evt, "❌ Template must be a JSON object (dictionary).")
+    #                 return
                 
-                # Validate that all values are strings for templating
-                for key, value in new_template.items():
-                    if not isinstance(value, str):
-                        await self._send_text_reply(evt, f"❌ Template value for '{key}' must be a string. Got: {type(value).__name__}")
-                        return
+    #             # Validate that all values are strings for templating
+    #             for key, value in new_template.items():
+    #                 if not isinstance(value, str):
+    #                     await self._send_text_reply(evt, f"❌ Template value for '{key}' must be a string. Got: {type(value).__name__}")
+    #                     return
                 
-            except json.JSONDecodeError as e:
-                await self._send_text_reply(evt, f"❌ Invalid JSON format: {str(e)}\n\nPlease provide a valid JSON object.")
-                return
+    #         except json.JSONDecodeError as e:
+    #             await self._send_text_reply(evt, f"❌ Invalid JSON format: {str(e)}\n\nPlease provide a valid JSON object.")
+    #             return
             
-            # Update the template
-            success = await self.db.update_message_template(
-                webhook_id=webhook_id_int,
-                user_id=evt.sender,
-                message_data_template=new_template,
-            )
+    #         # Update the template
+    #         success = await self.db.update_message_template(
+    #             webhook_id=webhook_id_int,
+    #             user_id=evt.sender,
+    #             message_data_template=new_template,
+    #         )
             
-            if success:
-                template_str = json.dumps(new_template, indent=2)
-                await self._send_text_reply(evt,
-                    f"✅ Message template updated for webhook ID {webhook_id_int}!\n\n"
-                    f"**New template:**\n```json\n{template_str}\n```"
-                )
-            else:
-                await self._send_text_reply(evt, "❌ Failed to update template. Please try again.")
+    #         if success:
+    #             template_str = json.dumps(new_template, indent=2)
+    #             await self._send_text_reply(evt,
+    #                 f"✅ Message template updated for webhook ID {webhook_id_int}!\n\n"
+    #                 f"**New template:**\n```json\n{template_str}\n```"
+    #             )
+    #         else:
+    #             await self._send_text_reply(evt, "❌ Failed to update template. Please try again.")
                 
-        except Exception as e:
-            self.log.error(f"Failed to configure webhook template: {e}")
-            await self._send_text_reply(evt, f"❌ Failed to configure template: {str(e)}")
+    #     except Exception as e:
+    #         self.log.error(f"Failed to configure webhook template: {e}")
+    #         await self._send_text_reply(evt, f"❌ Failed to configure template: {str(e)}")
 
-    @webhook_command.subcommand("template", help="Show message template for a webhook")
-    @command.argument("webhook_id", pass_raw=False, required=True)
-    async def show_template(self, evt: MessageEvent, webhook_id: str) -> None:
-        """Show the current message data template for a webhook."""
-        if not webhook_id.isdigit():
-            await self._send_text_reply(evt, "❌ Webhook ID must be a number. Use `!webhook status` to see your webhook IDs.")
-            return
+    # @webhook_command.subcommand("template", help="Show message template for a webhook")
+    # @command.argument("webhook_id", pass_raw=False, required=True)
+    # async def show_template(self, evt: MessageEvent, webhook_id: str) -> None:
+    #     """Show the current message data template for a webhook."""
+    #     if not webhook_id.isdigit():
+    #         await self._send_text_reply(evt, "❌ Webhook ID must be a number. Use `!webhook status` to see your webhook IDs.")
+    #         return
             
-        webhook_id_int = int(webhook_id)
+    #     webhook_id_int = int(webhook_id)
         
-        try:
-            # Verify webhook belongs to user
-            webhook = await self.db.get_webhook_by_id(webhook_id_int)
-            if not webhook or webhook.user_id != evt.sender:
-                await self._send_text_reply(evt, f"❌ No webhook found with ID {webhook_id_int} or you don't own it.")
-                return
+    #     try:
+    #         # Verify webhook belongs to user
+    #         webhook = await self.db.get_webhook_by_id(webhook_id_int)
+    #         if not webhook or webhook.user_id != evt.sender:
+    #             await self._send_text_reply(evt, f"❌ No webhook found with ID {webhook_id_int} or you don't own it.")
+    #             return
 
-            template = webhook.message_data_template or self.config.message_data_template
-            template_type = "Custom" if webhook.message_data_template else "Default"
+    #         template = webhook.message_data_template or self.config.message_data_template
+    #         template_type = "Custom" if webhook.message_data_template else "Default"
             
-            template_str = json.dumps(template, indent=2)
+    #         template_str = json.dumps(template, indent=2)
             
-            await self._send_text_reply(evt,
-                f"**{template_type} Message Template for Webhook ID {webhook_id_int}:**\n"
-                f"```json\n{template_str}\n```\n\n"
-                f"**Available variables:** event_id, room_id, sender, timestamp, message_type, body, formatted_body, format"
-            )
+    #         await self._send_text_reply(evt,
+    #             f"**{template_type} Message Template for Webhook ID {webhook_id_int}:**\n"
+    #             f"```json\n{template_str}\n```\n\n"
+    #             f"**Available variables:** event_id, room_id, sender, timestamp, message_type, body, formatted_body, format"
+    #         )
             
-        except Exception as e:
-            self.log.error(f"Failed to show template: {e}")
-            await self._send_text_reply(evt, f"❌ Failed to show template: {str(e)}")
+    #     except Exception as e:
+    #         self.log.error(f"Failed to show template: {e}")
+    #         await self._send_text_reply(evt, f"❌ Failed to show template: {str(e)}")
 
-    @webhook_command.subcommand("reset-template", help="Reset webhook template to default")
-    @command.argument("webhook_id", pass_raw=False, required=True)
-    async def reset_template(self, evt: MessageEvent, webhook_id: str) -> None:
-        """Reset the message data template to default for a webhook."""
-        if not webhook_id.isdigit():
-            await self._send_text_reply(evt, "❌ Webhook ID must be a number. Use `!webhook status` to see your webhook IDs.")
-            return
+    # @webhook_command.subcommand("reset-template", help="Reset webhook template to default")
+    # @command.argument("webhook_id", pass_raw=False, required=True)
+    # async def reset_template(self, evt: MessageEvent, webhook_id: str) -> None:
+    #     """Reset the message data template to default for a webhook."""
+    #     if not webhook_id.isdigit():
+    #         await self._send_text_reply(evt, "❌ Webhook ID must be a number. Use `!webhook status` to see your webhook IDs.")
+    #         return
             
-        webhook_id_int = int(webhook_id)
+    #     webhook_id_int = int(webhook_id)
         
-        try:
-            # Verify webhook belongs to user
-            webhook = await self.db.get_webhook_by_id(webhook_id_int)
-            if not webhook or webhook.user_id != evt.sender:
-                await self._send_text_reply(evt, f"❌ No webhook found with ID {webhook_id_int} or you don't own it.")
-                return
+    #     try:
+    #         # Verify webhook belongs to user
+    #         webhook = await self.db.get_webhook_by_id(webhook_id_int)
+    #         if not webhook or webhook.user_id != evt.sender:
+    #             await self._send_text_reply(evt, f"❌ No webhook found with ID {webhook_id_int} or you don't own it.")
+    #             return
 
-            success = await self.db.update_message_template(
-                webhook_id=webhook_id_int,
-                user_id=evt.sender,
-                message_data_template=None,  # Reset to None to use default
-            )
+    #         success = await self.db.update_message_template(
+    #             webhook_id=webhook_id_int,
+    #             user_id=evt.sender,
+    #             message_data_template=None,  # Reset to None to use default
+    #         )
             
-            if success:
-                default_template = self.config.message_data_template
-                template_str = json.dumps(default_template, indent=2)
+    #         if success:
+    #             default_template = self.config.message_data_template
+    #             template_str = json.dumps(default_template, indent=2)
                 
-                await self._send_text_reply(evt,
-                    f"✅ Message template reset to default for webhook ID {webhook_id_int}!\n\n"
-                    f"**Default template:**\n```json\n{template_str}\n```"
-                )
-            else:
-                await self._send_text_reply(evt, "❌ Failed to reset template. Please try again.")
+    #             await self._send_text_reply(evt,
+    #                 f"✅ Message template reset to default for webhook ID {webhook_id_int}!\n\n"
+    #                 f"**Default template:**\n```json\n{template_str}\n```"
+    #             )
+    #         else:
+    #             await self._send_text_reply(evt, "❌ Failed to reset template. Please try again.")
                 
-        except Exception as e:
-            self.log.error(f"Failed to reset template: {e}")
-            await self._send_text_reply(evt, f"❌ Failed to reset template: {str(e)}")
+    #     except Exception as e:
+    #         self.log.error(f"Failed to reset template: {e}")
+    #         await self._send_text_reply(evt, f"❌ Failed to reset template: {str(e)}")
 
     @event.on(EventType.ROOM_MESSAGE)
     async def on_message(self, evt: MessageEvent) -> None:

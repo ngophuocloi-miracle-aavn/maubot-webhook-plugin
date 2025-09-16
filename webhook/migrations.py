@@ -18,53 +18,19 @@ from mautrix.util.async_db import Connection, Scheme, UpgradeTable
 upgrade_table = UpgradeTable()
 
 
-@upgrade_table.register(description="Create webhook registration table", upgrades_to=1)
+@upgrade_table.register(description="Create webhook registration table with support for multiple webhooks per user", upgrades_to=1)
 async def upgrade_latest(conn: Connection, scheme: Scheme) -> None:
-    gen = "GENERATED ALWAYS AS IDENTITY" if scheme != Scheme.SQLITE else ""
     await conn.execute(
         f"""CREATE TABLE IF NOT EXISTS webhook_registration (
-            id          INTEGER {gen},
+            id          SERIAL,
             room_id     TEXT NOT NULL,
             user_id     TEXT NOT NULL,
             webhook_url TEXT NOT NULL,
             enabled     BOOLEAN DEFAULT true,
             created_at  timestamp NOT NULL,
+            message_data_template TEXT,
 
             PRIMARY KEY (id),
-            UNIQUE (room_id, user_id)
+            UNIQUE (room_id, user_id, webhook_url)
         )"""
     )
-
-
-@upgrade_table.register(description="Remove unique constraint on (room_id, user_id) to allow multiple webhooks per user", upgrades_to=3)
-async def upgrade_v3(conn: Connection, scheme: Scheme) -> None:
-    if scheme == Scheme.SQLITE:
-        # SQLite doesn't support dropping constraints, so we need to recreate the table
-        await conn.execute("""
-            CREATE TABLE webhook_registration_new (
-                id          INTEGER PRIMARY KEY,
-                room_id     TEXT NOT NULL,
-                user_id     TEXT NOT NULL,
-                webhook_url TEXT NOT NULL,
-                enabled     BOOLEAN DEFAULT true,
-                created_at  timestamp NOT NULL,
-                message_data_template TEXT,
-                
-                UNIQUE (room_id, user_id, webhook_url)
-            )
-        """)
-        
-        # Copy data from old table to new table
-        await conn.execute("""
-            INSERT INTO webhook_registration_new (id, room_id, user_id, webhook_url, enabled, created_at, message_data_template)
-            SELECT id, room_id, user_id, webhook_url, enabled, created_at, message_data_template
-            FROM webhook_registration
-        """)
-        
-        # Drop old table and rename new table
-        await conn.execute("DROP TABLE webhook_registration")
-        await conn.execute("ALTER TABLE webhook_registration_new RENAME TO webhook_registration")
-    else:
-        # PostgreSQL - drop the old constraint and add new one
-        await conn.execute("ALTER TABLE webhook_registration DROP CONSTRAINT webhook_registration_room_id_user_id_key")
-        await conn.execute("ALTER TABLE webhook_registration ADD CONSTRAINT webhook_registration_room_user_url_key UNIQUE (room_id, user_id, webhook_url)")
