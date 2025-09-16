@@ -164,10 +164,10 @@ class WebhookBot(Plugin):
                          "• `!webhook unregister [url|id]` - Delete webhook(s)\n"
                          "• `!webhook disable <id>` - Disable a webhook\n"
                          "• `!webhook enable <id>` - Enable a webhook\n"
-                         "• `!webhook list` - List all webhooks in this room\n"
-                         "• `!webhook configure <id> <template>` - Configure message template for a webhook\n"
-                         "• `!webhook template <id>` - Show webhook template\n"
-                         "• `!webhook reset-template <id>` - Reset webhook template")
+                         "• `!webhook list` - List all webhooks in this room\n")
+                        #  "• `!webhook configure <id> <template>` - Configure message template for a webhook\n"
+                        #  "• `!webhook template <id>` - Show webhook template\n"
+                        #  "• `!webhook reset-template <id>` - Reset webhook template")
 
     @webhook_command.subcommand("register", help="Register a webhook URL")
     @command.argument("url", pass_raw=True, required=True)
