@@ -18,19 +18,19 @@ from mautrix.util.async_db import Connection, Scheme, UpgradeTable
 upgrade_table = UpgradeTable()
 
 
-@upgrade_table.register(description="Create webhook registration table", upgrades_to=1)
+@upgrade_table.register(description="Create webhook registration table with support for multiple webhooks per user", upgrades_to=1)
 async def upgrade_latest(conn: Connection, scheme: Scheme) -> None:
-    gen = "GENERATED ALWAYS AS IDENTITY" if scheme != Scheme.SQLITE else ""
     await conn.execute(
         f"""CREATE TABLE IF NOT EXISTS webhook_registration (
-            id          INTEGER {gen},
+            id          SERIAL,
             room_id     TEXT NOT NULL,
             user_id     TEXT NOT NULL,
             webhook_url TEXT NOT NULL,
             enabled     BOOLEAN DEFAULT true,
             created_at  timestamp NOT NULL,
+            message_data_template TEXT,
 
             PRIMARY KEY (id),
-            UNIQUE (room_id, user_id)
+            UNIQUE (room_id, user_id, webhook_url)
         )"""
     )
