@@ -74,6 +74,48 @@ class WebhookRegistration:
         )
 
 
+@dataclass
+class IncomingWebhook:
+    id: int
+    room_id: RoomID
+    user_id: UserID
+    webhook_id: str
+    api_key: str
+    enabled: bool = True
+    created_at: datetime = attr.ib(factory=datetime.now)
+    last_used: Optional[datetime] = None
+
+    @classmethod
+    def from_row(cls, row: Record | None) -> IncomingWebhook | None:
+        if not row:
+            return None
+        
+        created_at = row["created_at"]
+        if not isinstance(created_at, datetime):
+            try:
+                created_at = datetime.fromisoformat(created_at)
+            except ValueError:
+                created_at = datetime.now()
+        
+        last_used = row.get("last_used")
+        if last_used and not isinstance(last_used, datetime):
+            try:
+                last_used = datetime.fromisoformat(last_used)
+            except ValueError:
+                last_used = None
+        
+        return cls(
+            id=row["id"],
+            room_id=row["room_id"],
+            user_id=row["user_id"],
+            webhook_id=row["webhook_id"],
+            api_key=row["api_key"],
+            enabled=bool(row["enabled"]),
+            created_at=created_at,
+            last_used=last_used,
+        )
+
+
 class WebhookDBManager:
     db: Database
 
@@ -286,3 +328,106 @@ class WebhookDBManager:
         """
         result = await self.db.execute(q, webhook_id, user_id)
         return result != "DELETE 0"
+
+    # Incoming webhook methods
+    async def create_incoming_webhook(
+        self,
+        room_id: RoomID,
+        user_id: UserID,
+        webhook_id: str,
+        api_key: str,
+    ) -> IncomingWebhook:
+        """Create a new incoming webhook endpoint."""
+        created_at = datetime.now()
+        
+        insert_q = """
+        INSERT INTO incoming_webhook (room_id, user_id, webhook_id, api_key, enabled, created_at)
+        VALUES ($1, $2, $3, $4, true, $5)
+        RETURNING id, room_id, user_id, webhook_id, api_key, enabled, created_at, last_used
+        """
+        
+        # Handle SQLite differently since it may not support RETURNING
+        if self.db.scheme == Scheme.SQLITE:
+            sqlite_insert_q = """
+            INSERT INTO incoming_webhook (room_id, user_id, webhook_id, api_key, enabled, created_at)
+            VALUES ($1, $2, $3, $4, true, $5)
+            """
+            cur = await self.db.execute(sqlite_insert_q, room_id, user_id, webhook_id, api_key, created_at)
+            
+            if SQLiteCursor is not None:
+                assert isinstance(cur, SQLiteCursor)
+            id = cur.lastrowid
+            
+            return IncomingWebhook(
+                id=id,
+                room_id=room_id,
+                user_id=user_id,
+                webhook_id=webhook_id,
+                api_key=api_key,
+                enabled=True,
+                created_at=created_at,
+                last_used=None,
+            )
+        else:
+            row = await self.db.fetchrow(insert_q, room_id, user_id, webhook_id, api_key, created_at)
+            return IncomingWebhook.from_row(row)
+
+    async def get_incoming_webhook_by_id(self, webhook_id: str) -> IncomingWebhook | None:
+        """Get an incoming webhook by webhook_id."""
+        q = """
+        SELECT id, room_id, user_id, webhook_id, api_key, enabled, created_at, last_used
+        FROM incoming_webhook 
+        WHERE webhook_id = $1 AND enabled = true
+        """
+        row = await self.db.fetchrow(q, webhook_id)
+        return IncomingWebhook.from_row(row)
+
+    async def get_incoming_webhooks_by_user(self, room_id: RoomID, user_id: UserID) -> list[IncomingWebhook]:
+        """Get all incoming webhooks for a user in a room."""
+        q = """
+        SELECT id, room_id, user_id, webhook_id, api_key, enabled, created_at, last_used
+        FROM incoming_webhook 
+        WHERE room_id = $1 AND user_id = $2
+        ORDER BY created_at DESC
+        """
+        rows = await self.db.fetch(q, room_id, user_id)
+        return [IncomingWebhook.from_row(row) for row in rows if row]
+    
+    async def get_incoming_webhooks_by_id(self, id: int, user_id: UserID) -> IncomingWebhook | None:
+        """Get an incoming webhook by its internal ID."""
+        q = """
+        SELECT id, room_id, user_id, webhook_id, api_key, enabled, created_at, last_used
+        FROM incoming_webhook 
+        WHERE id = $1 AND user_id = $2
+        """
+        row = await self.db.fetchrow(q, id, user_id)
+        return IncomingWebhook.from_row(row)
+
+    async def delete_incoming_webhook(self, id: int, user_id: UserID) -> bool:
+        """Delete an incoming webhook by its internal ID (with user verification)."""
+        q = """
+        DELETE FROM incoming_webhook 
+        WHERE id = $1 AND user_id = $2
+        """
+        result = await self.db.execute(q, id, user_id)
+        return result != "DELETE 0"
+
+    async def update_incoming_webhook_last_used(self, webhook_id: str) -> bool:
+        """Update the last_used timestamp for an incoming webhook."""
+        q = """
+        UPDATE incoming_webhook 
+        SET last_used = $2
+        WHERE webhook_id = $1
+        """
+        result = await self.db.execute(q, webhook_id, datetime.now())
+        return result != "UPDATE 0"
+
+    async def validate_incoming_webhook(self, webhook_id: str, api_key: str) -> IncomingWebhook | None:
+        """Validate an incoming webhook by webhook_id and api_key."""
+        q = """
+        SELECT id, room_id, user_id, webhook_id, api_key, enabled, created_at, last_used
+        FROM incoming_webhook 
+        WHERE webhook_id = $1 AND api_key = $2 AND enabled = true
+        """
+        row = await self.db.fetchrow(q, webhook_id, api_key)
+        return IncomingWebhook.from_row(row)

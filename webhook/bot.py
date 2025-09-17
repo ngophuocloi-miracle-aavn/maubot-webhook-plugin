@@ -18,15 +18,19 @@ from __future__ import annotations
 
 from typing import Any, Dict
 import asyncio
+import html
 import json
 import logging
 import re
+import secrets
+import uuid
 from urllib.parse import urlparse
 
 import aiohttp
+from aiohttp import web
 
 from maubot import MessageEvent, Plugin
-from maubot.handlers import command, event
+from maubot.handlers import command, event, web as web_handler
 from mautrix.types import (
     EventID,
     EventType,
@@ -41,7 +45,7 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 from mautrix.util.formatter import EntityType, MarkdownString, MatrixParser
 from mautrix.util import markdown
 
-from .db import WebhookDBManager, WebhookRegistration
+from .db import WebhookDBManager, WebhookRegistration, IncomingWebhook
 from .migrations import upgrade_table
 
 
@@ -157,19 +161,106 @@ class WebhookBot(Plugin):
         except Exception:
             return False
 
+    def _generate_webhook_id(self) -> str:
+        """Generate a unique webhook ID."""
+        return str(uuid.uuid4())
+
+    def _generate_api_key(self) -> str:
+        """Generate a secure API key."""
+        return secrets.token_urlsafe(32)
+
+    def _get_webhook_url(self, webhook_id: str) -> str:
+        """Get the full webhook URL for a webhook ID."""
+        # Use the maubot's public URL if available, otherwise use a placeholder
+        base_url = getattr(self.webapp, 'public_url', 'http://localhost:29316')
+        return f"{base_url}/_matrix/maubot/plugin/{self.id}/webhook/{webhook_id}"
+
+    @web_handler.post("/webhook/{webhook_id}")
+    async def handle_incoming_webhook(self, request: web.Request) -> web.Response:
+        """Handle incoming webhook requests."""
+        webhook_id = request.match_info.get("webhook_id")
+        
+        if not webhook_id:
+            return web.json_response({"error": "Missing webhook ID"}, status=400)
+        
+        # Get authorization header
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return web.json_response({"error": "Missing or invalid Authorization header"}, status=401)
+        
+        api_key = auth_header[7:]  # Remove "Bearer " prefix
+        
+        # Validate webhook and API key
+        webhook = await self.db.validate_incoming_webhook(webhook_id, api_key)
+        if not webhook:
+            return web.json_response({"error": "Invalid webhook ID or API key"}, status=401)
+        
+        try:
+            # Parse request body
+            if request.content_type == "application/json":
+                data = await request.json()
+            else:
+                # Try to parse as JSON anyway
+                text = await request.text()
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    data = {"message": text}
+            
+            # Extract message
+            message = data.get("message", "")
+            if not message:
+                return web.json_response({"error": "Missing 'message' field in request body"}, status=400)
+            
+            # Update last used timestamp
+            await self.db.update_incoming_webhook_last_used(webhook_id)
+            
+            # Send message to Matrix room
+            content = TextMessageEventContent(
+                msgtype=MessageType.TEXT,
+                body=str(message)
+            )
+            
+            # Support for formatted messages
+            formatted_body = data.get("formatted_body")
+            if formatted_body:
+                content.format = Format.HTML
+                content.formatted_body = str(formatted_body)
+            
+            await self.client.send_message_event(
+                webhook.room_id,
+                EventType.ROOM_MESSAGE,
+                content
+            )
+            
+            self.log.info(f"Message sent via webhook {webhook_id} to room {webhook.room_id}")
+            
+            return web.json_response({
+                "success": True,
+                "message": "Message sent successfully",
+                "room_id": str(webhook.room_id),
+            })
+            
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+        except Exception as e:
+            self.log.error(f"Error processing webhook {webhook_id}: {e}")
+            return web.json_response({"error": "Internal server error"}, status=500)
+
     @command.new("webhook", help="Webhook management commands")
     async def webhook_command(self, evt: MessageEvent) -> None:
         await self._send_text_reply(evt, "Available webhook commands:\n"
+                         "**Outgoing webhooks (send Matrix messages to external URLs):**\n"
                          "• `!webhook register <url>` - Register a new webhook URL\n"
                          "• `!webhook unregister [url|id]` - Delete webhook(s)\n"
                          "• `!webhook disable <id>` - Disable a webhook\n"
                          "• `!webhook enable <id>` - Enable a webhook\n"
-                         "• `!webhook list` - List all webhooks in this room\n")
-                        #  "• `!webhook configure <id> <template>` - Configure message template for a webhook\n"
-                        #  "• `!webhook template <id>` - Show webhook template\n"
-                        #  "• `!webhook reset-template <id>` - Reset webhook template")
+                         "• `!webhook list` - List all webhooks in this room\n"
+                         "\n**Incoming webhooks (receive messages from external services):**\n"
+                         "• `!webhook create` - Create a new incoming webhook endpoint\n"
+                         "• `!webhook delete <webhook_id>` - Delete an incoming webhook\n")
 
-    @webhook_command.subcommand("register", help="Register a webhook URL")
+    @webhook_command.subcommand("register", help="Register a webhook URL to forward messages to")
     @command.argument("url", pass_raw=True, required=True)
     async def register_webhook(self, evt: MessageEvent, url: str) -> None:
         """Register a webhook URL for the current room and user."""
@@ -273,6 +364,112 @@ class WebhookBot(Plugin):
         except Exception as e:
             self.log.error(f"Failed to delete webhook: {e}")
             await self._send_text_reply(evt, f"❌ Failed to delete webhook: {str(e)}")
+
+    @webhook_command.subcommand("create", help="Create a new webhook URL endpoint to be used by external services")
+    async def register_incoming_webhook(self, evt: MessageEvent) -> None:
+        """Create a new incoming webhook endpoint for the current room and user."""
+        
+        try:
+            # Generate unique webhook ID and API key
+            webhook_id = self._generate_webhook_id()
+            api_key = self._generate_api_key()
+            
+            # Create the incoming webhook in the database
+            webhook = await self.db.create_incoming_webhook(
+                room_id=evt.room_id,
+                user_id=evt.sender,
+                webhook_id=webhook_id,
+                api_key=api_key,
+            )
+            
+            webhook_url = self._get_webhook_url(webhook_id)
+            
+            await self._send_text_reply(evt,
+                f"✅ **Webhook created successfully!**\n\n"
+                f"* **Webhook URL:** `POST {webhook_url}`\n"
+                f"* **API Key:** `{api_key}`\n\n"
+                f"To send a message to this room, make a POST request to the webhook URL with:\n"
+                f"* Header: `Authorization: Bearer {api_key}`\n"
+                f"* Body: JSON with `message` field\n\n"
+                f"```"
+            )
+            
+            self.log.info(f"Incoming webhook created: {webhook_id} for user {evt.sender} in room {evt.room_id}")
+            
+        except Exception as e:
+            self.log.error(f"Failed to create webhook: {e}")
+            await self._send_text_reply(evt, f"❌ Failed to create webhook: {str(e)}")
+
+    @webhook_command.subcommand("delete", help="Delete a webhook URL endpoint")
+    @command.argument("webhook_id", pass_raw=True, required=True)
+    async def delete_webhook(self, evt: MessageEvent, webhook_id: int) -> None:
+        """Delete a webhook by webhook ID."""
+        webhook_id = int(webhook_id.strip())
+        
+        if not webhook_id:
+            await self._send_text_reply(evt, "❌ Please provide a webhook ID.\n"
+                            "Usage: `!webhook delete <webhook_id>`\n"
+                            "Use `!webhook list` to see your webhook IDs.")
+            return
+
+        try:
+            # Verify the webhook exists and belongs to the user
+            webhook = await self.db.get_incoming_webhooks_by_id(webhook_id, evt.sender)
+            
+            if not webhook:
+                await self._send_text_reply(evt, f"❌ No webhook URL found with ID: `{webhook_id}`\n"
+                                "Use `!webhook list` to see your webhook IDs.")
+                return
+            
+            # Delete the webhook
+            success = await self.db.delete_incoming_webhook(webhook_id, evt.sender)
+            
+            if success:
+                await self._send_text_reply(evt, f"✅ Incoming webhook deleted successfully!\n"
+                                f"**Webhook ID:** `{webhook_id}`\n"
+                                f"The webhook URL is now invalid and cannot be used.")
+                self.log.info(f"Incoming webhook {webhook_id} deleted for user {evt.sender}")
+            else:
+                await self._send_text_reply(evt, f"❌ Failed to delete webhook `{webhook_id}`.")
+                
+        except Exception as e:
+            self.log.error(f"Failed to delete incoming webhook: {e}")
+            await self._send_text_reply(evt, f"❌ Failed to delete webhook: {str(e)}")
+
+    @webhook_command.subcommand("list", help="List all webhooks in this room")
+    async def list_webhooks(self, evt: MessageEvent) -> None:
+        """List all webhook registrations in the current room."""
+        try:
+            outWebhooks = await self.db.list_webhooks_for_room(evt.room_id)
+            
+            inWebhooks = await self.db.get_incoming_webhooks_by_user(evt.room_id, evt.sender)
+            
+            if not outWebhooks and not inWebhooks:
+                await self._send_text_reply(evt, "You have no webhook in this room.")
+                return
+
+            response = "**Your incoming webhook endpoints:**\n\n"
+            for webhook in inWebhooks:
+                status = "🟢 Active" if webhook.enabled else "🔴 Disabled"
+                webhook_url = self._get_webhook_url(webhook.webhook_id)
+                last_used = webhook.last_used.strftime("%Y-%m-%d %H:%M:%S") if webhook.last_used else "Never"
+                
+                response += (
+                    f"* **ID {webhook.id}:** `{webhook_url} ({status})` - API Key: `{webhook.api_key}`\n\n"
+                )
+
+            response += "**Outgoing webhooks in this room:**\n\n"
+            for webhook in outWebhooks:
+                status = "🟢 Active" if webhook.enabled else "🔴 Disabled"
+                response += (
+                    f"* **ID {webhook.id}:** `{webhook.webhook_url} ({status})`\n\n"
+                )
+            
+            await self._send_text_reply(evt, response)
+            
+        except Exception as e:
+            self.log.error(f"Failed to list webhooks: {e}")
+            await self._send_text_reply(evt, f"❌ Failed to list webhooks: {str(e)}")
 
     @webhook_command.subcommand("disable", help="Disable your webhooks")
     @command.argument("target", pass_raw=True, required=False)
@@ -427,29 +624,6 @@ class WebhookBot(Plugin):
         except Exception as e:
             self.log.error(f"Failed to enable webhook: {e}")
             await self._send_text_reply(evt, f"❌ Failed to enable webhook: {str(e)}")
-
-    @webhook_command.subcommand("list", help="List all webhooks in this room")
-    async def list_webhooks(self, evt: MessageEvent) -> None:
-        """List all webhook registrations in the current room."""
-        try:
-            webhooks = await self.db.list_webhooks_for_room(evt.room_id)
-            
-            if not webhooks:
-                await self._send_text_reply(evt, "No webhooks registered in this room.")
-                return
-
-            response = "**Webhooks in this room:**\n\n"
-            for webhook in webhooks:
-                status = "🟢 Active" if webhook.enabled else "🔴 Disabled"
-                response += (
-                    f"* **ID {webhook.id}:** `{webhook.webhook_url} ({status})`\n\n"
-                )
-            
-            await self._send_text_reply(evt, response)
-            
-        except Exception as e:
-            self.log.error(f"Failed to list webhooks: {e}")
-            await self._send_text_reply(evt, f"❌ Failed to list webhooks: {str(e)}")
 
     # @webhook_command.subcommand("configure", help="Configure message data template for a webhook")
     # @command.argument("webhook_id", pass_raw=False, required=True)

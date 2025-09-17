@@ -1,0 +1,6 @@
+aiohttp>=3.8.0
+asyncpg>=0.25.0
+attrs>=21.0.0
+# Note: These are required for maubot plugins
+# mautrix>=0.19.0 (usually provided by maubot)
+# maubot>=0.4.0 (the main framework)

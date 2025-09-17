@@ -19,7 +19,7 @@ upgrade_table = UpgradeTable()
 
 
 @upgrade_table.register(description="Create webhook registration table with support for multiple webhooks per user", upgrades_to=1)
-async def upgrade_latest(conn: Connection, scheme: Scheme) -> None:
+async def upgrade_v1(conn: Connection, scheme: Scheme) -> None:
     await conn.execute(
         f"""CREATE TABLE IF NOT EXISTS webhook_registration (
             id          SERIAL,
@@ -32,5 +32,24 @@ async def upgrade_latest(conn: Connection, scheme: Scheme) -> None:
 
             PRIMARY KEY (id),
             UNIQUE (room_id, user_id, webhook_url)
+        )"""
+    )
+
+
+@upgrade_table.register(description="Create incoming webhook endpoints table", upgrades_to=2)
+async def upgrade_v2(conn: Connection, scheme: Scheme) -> None:
+    await conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS incoming_webhook (
+            id          SERIAL,
+            room_id     TEXT NOT NULL,
+            user_id     TEXT NOT NULL,
+            webhook_id  TEXT NOT NULL UNIQUE,
+            api_key     TEXT NOT NULL UNIQUE,
+            enabled     BOOLEAN DEFAULT true,
+            created_at  timestamp NOT NULL,
+            last_used   timestamp,
+
+            PRIMARY KEY (id),
+            UNIQUE (room_id, user_id, webhook_id)
         )"""
     )

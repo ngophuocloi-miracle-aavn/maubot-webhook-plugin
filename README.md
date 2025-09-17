@@ -1,9 +1,16 @@
 # Webhook Plugin for Maubot
 
-A Maubot plugin that allows users to register webhook URLs and automatically forwards all messages in a room to the registered webhooks.
+A Maubot plugin that provides both incoming and outgoing webhook functionality for Matrix rooms.
 
 ## Features
 
+### Incoming Webhooks (NEW!)
+- **Receive messages from external services**: Create webhook endpoints that external services can POST to
+- **Unique URLs and API keys**: Each webhook gets a unique URL and API key for security
+- **Automatic message forwarding**: Messages sent to webhook endpoints are posted to Matrix rooms
+- **User-specific endpoints**: Each user can create their own webhook endpoints
+
+### Outgoing Webhooks
 - **Multiple webhooks per user**: Users can register multiple webhook URLs in the same room
 - **Message forwarding**: All messages in rooms with registered webhooks are automatically forwarded via POST requests
 - **Configurable message templates**: Customize the data structure sent to webhooks
@@ -14,24 +21,56 @@ A Maubot plugin that allows users to register webhook URLs and automatically for
 
 ## Commands
 
-### Basic Webhook Management
-- `!webhook register <url>` - Register a new webhook URL for your user in the current room
-- `!webhook register <url> <template>` - Register a webhook with custom message template
-- `!webhook list` - List all webhooks in the current room (shows ID, URL, and status)
-
-### Webhook Lifecycle Control
-- `!webhook unregister [id|url]` - **Delete** webhook(s) permanently from database
+### Outgoing Webhook Management
+- `!webhook register <url>` - Register a new outgoing webhook URL for your user in the current room
+- `!webhook unregister [id|url]` - Delete outgoing webhook(s) permanently from database
   - `!webhook unregister` - Delete all your webhooks
   - `!webhook unregister 123` - Delete webhook with ID 123
   - `!webhook unregister https://...` - Delete webhook with specific URL
-- `!webhook disable [id|url]` - **Disable** webhook(s) temporarily (keeps in database)
+- `!webhook disable [id|url]` - Disable outgoing webhook(s) temporarily (keeps in database)
   - `!webhook disable` - Disable all your active webhooks
   - `!webhook disable 123` - Disable webhook with ID 123
   - `!webhook disable https://...` - Disable webhook with specific URL
-- `!webhook enable [id|url]` - **Enable** previously disabled webhook(s)
+- `!webhook enable [id|url]` - Enable previously disabled outgoing webhook(s)
   - `!webhook enable` - Enable all your disabled webhooks
   - `!webhook enable 123` - Enable webhook with ID 123
   - `!webhook enable https://...` - Enable webhook with specific URL
+- `!webhook list` - List all outgoing webhooks in the current room (shows ID, URL, and status)
+
+### Incoming Webhook Management
+- `!webhook create` - Create a new incoming webhook endpoint for this room
+- `!webhook delete <webhook_id>` - Delete an incoming webhook endpoint
+
+## Incoming Webhooks Usage
+
+When you create an incoming webhook with `!webhook create`, you'll receive:
+- A unique webhook URL
+- A secure API key
+
+### Sending Messages via Webhook
+
+To send a message to the Matrix room, make a POST request to the webhook URL:
+
+```bash
+curl -X POST 'https://your-bot.domain/_matrix/maubot/plugin/xyz.maubot.webhook/webhook/your-webhook-id' \
+  -H 'Authorization: Bearer your-api-key' \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "Hello from external service!"}'
+```
+
+### Request Format
+
+The webhook accepts JSON requests with the following fields:
+- `message` (required): The text message to send
+- `formatted_body` (optional): HTML-formatted version of the message
+
+Example:
+```json
+{
+  "message": "Hello **world**!",
+  "formatted_body": "Hello <strong>world</strong>!"
+}
+```
 
 ## Configuration
 
@@ -40,128 +79,50 @@ The plugin supports extensive configuration options in `base-config.yaml`:
 ### Basic Settings
 - `webhook_timeout`: Request timeout in seconds (default: 30)
 - `max_webhook_retries`: Maximum number of retry attempts for failed requests (default: 3)
-- `webhook_user_agent`: User agent string for webhook requests (default: "Maubot-Webhook-Plugin/1.0")
+- `webhook_user_agent`: User agent string for outgoing webhook requests (default: "Maubot-Webhook-Plugin/1.0")
 
-### Default Message Data Template
-- `message_data_template`: Define the default structure of data sent to webhooks (JSON format in config)
-- `custom_fields`: Add custom static fields to all webhook payloads
+### Default Message Data Template (Outgoing Webhooks)
+- `message_data_template`: Define the default structure of data sent to outgoing webhooks (JSON format in config)
+- `custom_fields`: Add custom static fields to all outgoing webhook payloads
 - `include_empty_fields`: Whether to include null/empty fields (default: false)
 
 ### Response Template
 - `response_template`: Template for formatting webhook responses sent back to chat
 
-### Per-Webhook Templates
-Users can set custom templates for individual webhooks during registration using key=value format:
-- **Global default**: Set in `base-config.yaml` (JSON format)
-- **Per-webhook override**: Set during registration with key=value format
-- **Template inheritance**: Webhooks without custom templates use the global default
+## Current Implementation Status
 
-### Example Configuration
-```yaml
-# Global default template (JSON format)
-message_data_template:
-  event_id: "{event_id}"
-  room: "{room_id}"
-  user: "{sender}"
-  timestamp: "{timestamp}"
-  type: "{message_type}"
-  content: "{body}"
-  html_content: "{formatted_body}"
-  format: "{format}"
+### ✅ Implemented Features
+- **Outgoing webhooks**: Full lifecycle management (register, unregister, disable, enable, list)
+- **Incoming webhooks**: Create and delete endpoints with unique URLs and API keys
+- **HTTP endpoint**: Receive POST requests and forward to Matrix rooms
+- **Security**: API key validation and user isolation
 
-custom_fields:
-  source: "maubot-webhook"
-  version: "1.0"
-  environment: "production"
+### ⚠️ Missing Features
+- **Incoming webhook listing**: Command to list incoming webhooks (planned)
+- **Incoming webhook management**: Disable/enable for incoming webhooks (planned)
 
-response_template: "🤖 **Bot says:** {response}"
-include_empty_fields: false
-```
+## Database Schema
 
-## Message Template Formats
+The plugin creates two tables:
 
-### Global Configuration (JSON Format)
-In `base-config.yaml`, use standard YAML/JSON structure:
-```yaml
-message_data_template:
-  event_id: "{event_id}"
-  room_id: "{room_id}"
-  sender: "{sender}"
-  message: "{body}"
-```
+### `webhook_registration` (Outgoing Webhooks)
+- `id`: Unique identifier
+- `room_id`: Matrix room ID
+- `user_id`: Matrix user ID  
+- `webhook_url`: The registered webhook URL
+- `enabled`: Whether the webhook is active
+- `created_at`: Registration timestamp
+- `message_data_template`: Custom message template
 
-### Template Inheritance
-1. **Default**: Webhooks use global template from config
-2. **Override**: Use key=value format during registration to customize individual webhooks  
-3. **Fallback**: If no template specified during registration, uses built-in default template
-
-## Webhook Payload
-
-The payload structure is fully configurable via the `message_data_template` in your config. The default payload includes:
-
-```json
-{
-    "event_id": "message_event_id",
-    "room_id": "!room_id:example.com",
-    "sender": "@user:example.com",
-    "timestamp": 1640995200000,
-    "message_type": "m.text",
-    "body": "message text",
-    "formatted_body": "formatted message (if available)",
-    "format": "org.matrix.custom.html (if available)",
-    "source": "maubot-webhook",
-    "version": "1.0"
-}
-```
-
-### Available Template Variables
-- `{event_id}`: Matrix event ID
-- `{room_id}`: Matrix room ID  
-- `{sender}`: Matrix user ID of sender
-- `{timestamp}`: Message timestamp
-- `{message_type}`: Matrix message type (m.text, m.image, etc.)
-- `{body}`: Plain text message content
-- `{formatted_body}`: HTML formatted content (if available)
-- `{format}`: Message format type (if available)
-
-### Custom Payload Example
-You can customize the payload structure completely:
-
-```yaml
-message_data_template:
-  id: "{event_id}"
-  chat_room: "{room_id}"
-  user: "{sender}"
-  time: "{timestamp}"
-  message: "{body}"
-  
-custom_fields:
-  bot_name: "webhook-forwarder"
-  instance_id: "prod-01"
-```
-
-This would produce:
-```json
-{
-    "id": "message_event_id",
-    "chat_room": "!room_id:example.com", 
-    "user": "@user:example.com",
-    "time": 1640995200000,
-    "message": "message text",
-    "bot_name": "webhook-forwarder",
-    "instance_id": "prod-01"
-}
-```
-
-## Webhook Response
-
-Your webhook can optionally return a JSON response that will be sent back to the chat:
-
-```json
-{
-    "response": "This message will be sent back to the chat"
-}
-```
+### `incoming_webhook` (Incoming Webhooks)
+- `id`: Unique identifier
+- `room_id`: Matrix room ID
+- `user_id`: Matrix user ID
+- `webhook_id`: Unique webhook identifier (UUID)
+- `api_key`: Secure API key for authentication
+- `enabled`: Whether the webhook is active
+- `created_at`: Creation timestamp
+- `last_used`: Last usage timestamp
 
 ## Installation
 
@@ -169,34 +130,11 @@ Your webhook can optionally return a JSON response that will be sent back to the
 2. Upload the `.mbp` file to your maubot instance
 3. Create a new instance and configure it as needed
 
-## Database
-
-The plugin creates a `webhook_registration` table to store webhook registrations with the following schema:
-
-- `id`: Unique identifier (used for webhook management commands)
-- `room_id`: Matrix room ID
-- `user_id`: Matrix user ID  
-- `webhook_url`: The registered webhook URL
-- `enabled`: Whether the webhook is active (true/false)
-- `created_at`: Registration timestamp
-- `message_data_template`: JSON-stored custom message template for this webhook
-
-### Database Operations
-- **Register**: Creates new webhook or enables existing one by URL
-- **Delete (Unregister)**: Permanently removes webhook from database
-- **Disable**: Sets `enabled=false` but keeps webhook in database
-- **Enable**: Sets `enabled=true` for disabled webhooks
-- **List**: Shows all webhooks (enabled and disabled) with status indicators
-
-## Migration Notes
-
-The database automatically migrates to support multiple webhooks per user and per-webhook message templates. Existing single-webhook installations will be preserved and work normally.
-
 ## Examples
 
-### Basic Usage
+### Outgoing Webhooks
 ```bash
-# Register a simple webhook
+# Register a webhook to receive Matrix messages
 !webhook register https://example.com/hook
 
 # List all webhooks (shows IDs and status)
@@ -212,12 +150,34 @@ The database automatically migrates to support multiple webhooks per user and pe
 !webhook unregister 123
 ```
 
+### Incoming Webhooks
+```bash
+# Create an incoming webhook endpoint
+!webhook create
+
+# Delete an incoming webhook
+!webhook delete abc-123-def-456
+```
+
+### External Service Integration
+```bash
+# Send message via incoming webhook
+curl -X POST 'https://your-bot.domain/_matrix/maubot/plugin/xyz.maubot.webhook/webhook/abc-123-def' \
+  -H 'Authorization: Bearer your-secure-api-key-here' \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "Hello from external service!"}'
+```
+
 ## Security Considerations
 
+### Outgoing Webhooks
 - Only HTTP and HTTPS URLs are accepted
-- Webhook requests have configurable timeouts to prevent hanging
-- Failed webhook requests are retried with exponential backoff
-- **User isolation**: Users can only manage their own webhook registrations
-- **ID-based security**: Webhook operations by ID verify ownership before execution
-- **Multiple webhook support**: Each user can have multiple webhooks without conflicts
-- **Granular control**: Separate disable/enable vs delete operations for data safety
+- Webhook requests have configurable timeouts
+- Failed requests are retried with exponential backoff
+- User isolation: Users can only manage their own webhooks
+
+### Incoming Webhooks
+- Each webhook has a unique UUID and secure API key
+- API keys are validated on every request
+- User isolation: Users can only delete their own webhooks
+- Last usage tracking for monitoring
