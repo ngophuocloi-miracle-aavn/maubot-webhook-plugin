@@ -171,9 +171,7 @@ class WebhookBot(Plugin):
 
     def _get_webhook_url(self, webhook_id: str) -> str:
         """Get the full webhook URL for a webhook ID."""
-        # Use the maubot's public URL if available, otherwise use a placeholder
-        base_url = getattr(self.webapp, 'public_url', 'http://localhost:29316')
-        return f"{base_url}/_matrix/maubot/plugin/{self.id}/webhook/{webhook_id}"
+        return f"{self.webapp_url}webhook/{webhook_id}"
 
     @web_handler.post("/webhook/{webhook_id}")
     async def handle_incoming_webhook(self, request: web.Request) -> web.Response:
@@ -249,16 +247,7 @@ class WebhookBot(Plugin):
 
     @command.new("webhook", help="Webhook management commands")
     async def webhook_command(self, evt: MessageEvent) -> None:
-        await self._send_text_reply(evt, "Available webhook commands:\n"
-                         "**Outgoing webhooks (send Matrix messages to external URLs):**\n"
-                         "• `!webhook register <url>` - Register a new webhook URL\n"
-                         "• `!webhook unregister [url|id]` - Delete webhook(s)\n"
-                         "• `!webhook disable <id>` - Disable a webhook\n"
-                         "• `!webhook enable <id>` - Enable a webhook\n"
-                         "• `!webhook list` - List all webhooks in this room\n"
-                         "\n**Incoming webhooks (receive messages from external services):**\n"
-                         "• `!webhook create` - Create a new incoming webhook endpoint\n"
-                         "• `!webhook delete <webhook_id>` - Delete an incoming webhook\n")
+        pass
 
     @webhook_command.subcommand("register", help="Register a webhook URL to forward messages to")
     @command.argument("url", pass_raw=True, required=True)
@@ -450,12 +439,11 @@ class WebhookBot(Plugin):
 
             response = "**Your incoming webhook endpoints:**\n\n"
             for webhook in inWebhooks:
-                status = "🟢 Active" if webhook.enabled else "🔴 Disabled"
                 webhook_url = self._get_webhook_url(webhook.webhook_id)
                 last_used = webhook.last_used.strftime("%Y-%m-%d %H:%M:%S") if webhook.last_used else "Never"
                 
                 response += (
-                    f"* **ID {webhook.id}:** `{webhook_url} ({status})` - API Key: `{webhook.api_key}`\n\n"
+                    f"* **ID {webhook.id}:** `{webhook_url} ` - API Key: `{webhook.api_key}`\n\n"
                 )
 
             response += "**Outgoing webhooks in this room:**\n\n"
